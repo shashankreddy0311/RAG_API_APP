@@ -22,7 +22,7 @@ embedding = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L
 vectorstore = Chroma(persist_directory=PERSIST_DIR, embedding_function=embedding)
 retriever = vectorstore.as_retriever()
 
-generator = pipeline("text2text-generation", model="google/flan-t5-base", max_new_tokens=128)
+generator = pipeline("text2text-generation", model="google/flan-t5-small", max_new_tokens=128)
 llm = HuggingFacePipeline(pipeline=generator)
 prompt = PromptTemplate(
     input_variables=["context", "question"],
