@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Flask RAG Chatbot</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 flex flex-col items-center min-h-screen">
+  <div class="mt-8 w-full max-w-2xl bg-white rounded-2xl shadow-lg p-6">
+    <h1 class="text-2xl font-bold text-center mb-4 text-blue-600">🧠 Flask RAG </h1>
+
+    <!-- File Upload -->
+    <form id="uploadForm" class="flex items-center justify-center gap-2 mb-4" enctype="multipart/form-data">
+      <input type="file" name="file" id="fileInput" class="border p-2 rounded-md w-2/3">
+      <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700">Upload</button>
+    </form>
+    <p id="uploadMsg" class="text-center text-gray-700 mb-4"></p>
+
+    <!-- Chat Area -->
+    <div id="chatBox" class="bg-gray-50 border rounded-md p-4 h-96 overflow-y-auto space-y-4">
+      <div class="text-gray-400 text-center">Start by uploading a file, then ask a question 👇</div>
+    </div>
+
+    <!-- Input Area -->
+    <form id="chatForm" class="flex mt-4">
+      <input type="text" id="questionInput" placeholder="Type your question..." class="flex-grow border p-2 rounded-l-md focus:outline-none">
+      <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-r-md hover:bg-blue-700">Send</button>
+    </form>
+  </div>
+
+  <script>
+    // File upload handler
+    const uploadForm = document.getElementById("uploadForm");
+    const uploadMsg = document.getElementById("uploadMsg");
+
+    uploadForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fileInput = document.getElementById("fileInput");
+      if (!fileInput.files.length) {
+        uploadMsg.textContent = "⚠️ Please select a file first!";
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("file", fileInput.files[0]);
+      uploadMsg.textContent = "⏳ Uploading...";
+
+      try {
+        const res = await fetch("/upload_web", { method: "POST", body: formData });
+        const html = await res.text();
+        uploadMsg.textContent = "✅ File uploaded successfully!";
+      } catch (err) {
+        uploadMsg.textContent = "❌ Upload failed!";
+      }
+    });
+
+    // Chat handler
+    const chatForm = document.getElementById("chatForm");
+    const chatBox = document.getElementById("chatBox");
+
+    chatForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const questionInput = document.getElementById("questionInput");
+      const question = questionInput.value.trim();
+      if (!question) return;
+
+      // Display user message
+      chatBox.innerHTML += `<div class='text-right'><span class='bg-blue-100 px-3 py-2 rounded-lg inline-block text-blue-800'>${question}</span></div>`;
+      chatBox.scrollTop = chatBox.scrollHeight;
+      questionInput.value = "";
+
+      // Send to Flask backend
+      const res = await fetch("/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question })
+      });
+
+      const data = await res.json();
+      const answer = data.answer || "⚠️ No response received.";
+
+      // Display AI answer
+      chatBox.innerHTML += `<div class='text-left'><span class='bg-gray-200 px-3 py-2 rounded-lg inline-block text-gray-800'>${answer}</span></div>`;
+      chatBox.scrollTop = chatBox.scrollHeight;
+    });
+  </script>
+</body>
+</html>
