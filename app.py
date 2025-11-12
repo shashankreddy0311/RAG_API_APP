@@ -3,8 +3,6 @@ from threading import Thread
 from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
 
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_chroma import Chroma
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnableMap, RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
@@ -18,32 +16,35 @@ PERSIST_DIR = "chroma_store"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PERSIST_DIR, exist_ok=True)
 
-# ---- Initialize embeddings and vectorstore ----
-embedding = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-vectorstore = Chroma(persist_directory=PERSIST_DIR, embedding_function=embedding)
-retriever = vectorstore.as_retriever()
+embedding = None
+vectorstore = None
+retriever = None
+llm = None
 
-# ---- Lazy model loading setup ----
-llm = None  # Placeholder for LLM
+def load_background():
+    """Load model and embeddings after Flask starts."""
+    global embedding, vectorstore, retriever, llm
+    print("⏳ Loading background components...")
 
-def load_model_background():
-    """Load the text generation model in a background thread."""
-    global llm
-    from transformers import pipeline
+    from langchain_huggingface import HuggingFaceEmbeddings
+    from langchain_chroma import Chroma
     from langchain_community.llms import HuggingFacePipeline
+    from transformers import pipeline
 
-    print("⏳ Loading model in background (Flan-T5-small)...")
     try:
+        embedding = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        vectorstore = Chroma(persist_directory=PERSIST_DIR, embedding_function=embedding)
+        retriever = vectorstore.as_retriever()
+
         generator = pipeline("text2text-generation", model="google/flan-t5-small", max_new_tokens=128)
         llm = HuggingFacePipeline(pipeline=generator)
-        print("✅ Model loaded successfully!")
+
+        print("✅ Background loading complete!")
     except Exception as e:
-        print("❌ Failed to load model:", e)
+        print("❌ Background loading failed:", e)
 
-# Start loading the model without blocking Flask startup
-Thread(target=load_model_background).start()
+Thread(target=load_background).start()
 
-# ---- Prompt Template ----
 prompt = PromptTemplate(
     input_variables=["context", "question"],
     template=(
@@ -56,13 +57,11 @@ prompt = PromptTemplate(
 )
 
 def format_docs(docs):
-    """Join retrieved documents as text."""
     return "\n\n".join(d.page_content for d in docs)
 
 def get_rag_chain():
-    """Dynamically build the RAG chain after model loads."""
-    if llm is None:
-        raise Exception("Model is still loading... please wait 20–30 seconds.")
+    if llm is None or retriever is None:
+        raise Exception("Model or retriever still loading... please wait.")
     return (
         RunnableMap({
             "context": retriever | format_docs,
@@ -73,29 +72,29 @@ def get_rag_chain():
         | StrOutputParser()
     )
 
-# ---------- Web Interface ----------
 @app.route("/", methods=["GET"])
 def home():
     return render_template("index.html")
 
 @app.route("/upload_web", methods=["POST"])
 def upload_web():
-    """Handle file uploads from the web form."""
     if "file" not in request.files or request.files["file"].filename == "":
         return render_template("index.html", message="⚠️ No file selected!")
+
     try:
         file = request.files["file"]
         filename = secure_filename(file.filename)
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         file.save(filepath)
 
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
         docs = load_document(filepath)
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         splits = splitter.split_documents(docs)
-        if not splits:
-            return render_template("index.html", message="⚠️ No text could be extracted from the file.")
-        vectorstore.add_documents(splits)
-        vectorstore.persist()
+
+        if vectorstore:
+            vectorstore.add_documents(splits)
+            vectorstore.persist()
 
         return render_template("index.html", message=f"✅ File '{filename}' uploaded successfully!")
     except Exception as e:
@@ -103,7 +102,6 @@ def upload_web():
 
 @app.route("/ask", methods=["POST"])
 def ask_web():
-    """Handle question submissions from the web form."""
     try:
         question = request.get_json().get("question", "").strip()
         if not question:
@@ -113,30 +111,8 @@ def ask_web():
     except Exception as e:
         return jsonify({"answer": f"❌ Error: {str(e)}"})
 
-# ---------- API Endpoints ----------
-@app.route("/upload_file", methods=["POST"])
-def upload_file():
-    """API: upload file via REST request."""
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
-    file = request.files["file"]
-    filename = secure_filename(file.filename)
-    filepath = os.path.join(UPLOAD_FOLDER, filename)
-    file.save(filepath)
-
-    docs = load_document(filepath)
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    splits = splitter.split_documents(docs)
-    if not splits:
-        return jsonify({"error": "No content extracted from the document."}), 400
-    vectorstore.add_documents(splits)
-    vectorstore.persist()
-
-    return jsonify({"message": f"File '{filename}' uploaded successfully.", "chunks_added": len(splits)}), 200
-
 @app.route("/query", methods=["POST"])
 def query():
-    """API: answer query via JSON request."""
     try:
         data = request.get_json()
         question = data.get("question", "")
@@ -147,6 +123,5 @@ def query():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ---------- Run ----------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
